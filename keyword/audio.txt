@@ -1,0 +1,12 @@
+audio
+playback
+record
+microphone
+speaker
+volume
+codec
+pcm
+mp3
+wav
+sound
+noise
