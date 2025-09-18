@@ -609,22 +609,36 @@ class BatchCommandGUI(tk.Tk):
         log_type = self.log_type_var.get()
         keywords = []
         
+        # 获取正确的资源路径（支持打包后的路径）
+        def get_resource_path(relative_path):
+            try:
+                # PyInstaller打包后的临时目录
+                base_path = sys._MEIPASS
+            except AttributeError:
+                # 开发环境下的当前目录
+                base_path = os.path.abspath(".")
+            return os.path.join(base_path, relative_path)
+        
         try:
             if log_type == "audio":
-                with open("keyword/audio.txt", "r", encoding="utf-8") as f:
+                audio_path = get_resource_path("keyword/audio.txt")
+                with open(audio_path, "r", encoding="utf-8") as f:
                     keywords = [line.strip() for line in f if line.strip()]
             elif log_type == "display":
-                with open("keyword/display.txt", "r", encoding="utf-8") as f:
+                display_path = get_resource_path("keyword/display.txt")
+                with open(display_path, "r", encoding="utf-8") as f:
                     keywords = [line.strip() for line in f if line.strip()]
             elif log_type == "all":
                 # 合并所有关键词
                 try:
-                    with open("keyword/audio.txt", "r", encoding="utf-8") as f:
+                    audio_path = get_resource_path("keyword/audio.txt")
+                    with open(audio_path, "r", encoding="utf-8") as f:
                         keywords.extend([line.strip() for line in f if line.strip()])
                 except:
                     pass
                 try:
-                    with open("keyword/display.txt", "r", encoding="utf-8") as f:
+                    display_path = get_resource_path("keyword/display.txt")
+                    with open(display_path, "r", encoding="utf-8") as f:
                         keywords.extend([line.strip() for line in f if line.strip()])
                 except:
                     pass
@@ -1003,16 +1017,26 @@ class BatchCommandGUI(tk.Tk):
         display_text = scrolledtext.ScrolledText(display_frame)
         display_text.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
         
+        # 获取正确的资源路径（支持打包后的路径）
+        def get_resource_path(relative_path):
+            try:
+                # PyInstaller打包后的临时目录
+                base_path = sys._MEIPASS
+            except AttributeError:
+                # 开发环境下的当前目录
+                base_path = os.path.abspath(".")
+            return os.path.join(base_path, relative_path)
+        
         # 加载关键词
         try:
             # 音频关键词
-            audio_path = os.path.join(self.log_analyzer.keyword_dir, 'audio.txt')
+            audio_path = get_resource_path('keyword/audio.txt')
             if os.path.exists(audio_path):
                 with open(audio_path, 'r', encoding='utf-8') as f:
                     audio_text.insert(tk.END, f.read())
             
             # 显示关键词
-            display_path = os.path.join(self.log_analyzer.keyword_dir, 'display.txt')
+            display_path = get_resource_path('keyword/display.txt')
             if os.path.exists(display_path):
                 with open(display_path, 'r', encoding='utf-8') as f:
                     display_text.insert(tk.END, f.read())
@@ -1662,12 +1686,18 @@ class BatchCommandGUI(tk.Tk):
         
         try:
             # 启动adb进程
+            # 在Windows下添加creationflags参数以隐藏终端窗口
+            creation_flags = 0
+            if sys.platform == "win32":
+                creation_flags = subprocess.CREATE_NO_WINDOW
+            
             self.realtime_process = subprocess.Popen(
                 cmd, 
                 stdout=subprocess.PIPE, 
                 stderr=subprocess.PIPE,
                 universal_newlines=True,
-                bufsize=1
+                bufsize=1,
+                creationflags=creation_flags
             )
             
             # 创建停止事件

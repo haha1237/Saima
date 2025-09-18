@@ -51,34 +51,43 @@ class LogAnalyzer:
         Returns:
             关键字字典，键为类型（audio/display），值为关键字集合
         """
+        import sys
+        
+        # 获取正确的资源路径（支持打包后的路径）
+        def get_resource_path(relative_path):
+            try:
+                # PyInstaller打包后的临时目录
+                base_path = sys._MEIPASS
+            except AttributeError:
+                # 开发环境下的当前目录
+                base_path = os.path.abspath(".")
+            return os.path.join(base_path, relative_path)
+        
         keywords = {}
         
-        # 检查关键字目录是否存在
-        if not os.path.exists(self.keyword_dir):
-            print(f"警告: 关键字目录 {self.keyword_dir} 不存在，将创建空目录")
-            os.makedirs(self.keyword_dir, exist_ok=True)
-        
-        # 加载audio关键字
-        audio_path = os.path.join(self.keyword_dir, 'audio.txt')
-        if os.path.exists(audio_path):
-            with open(audio_path, 'r', encoding='utf-8') as f:
-                keywords['audio'] = {line.strip() for line in f if line.strip()}
-        else:
-            keywords['audio'] = set()
-            # 创建空的关键字文件
-            with open(audio_path, 'w', encoding='utf-8') as f:
-                pass
-        
-        # 加载display关键字
-        display_path = os.path.join(self.keyword_dir, 'display.txt')
-        if os.path.exists(display_path):
-            with open(display_path, 'r', encoding='utf-8') as f:
-                keywords['display'] = {line.strip() for line in f if line.strip()}
-        else:
-            keywords['display'] = set()
-            # 创建空的关键字文件
-            with open(display_path, 'w', encoding='utf-8') as f:
-                pass
+        # 使用资源路径获取关键字文件
+        try:
+            # 加载audio关键字
+            audio_path = get_resource_path('keyword/audio.txt')
+            if os.path.exists(audio_path):
+                with open(audio_path, 'r', encoding='utf-8') as f:
+                    keywords['audio'] = {line.strip() for line in f if line.strip()}
+            else:
+                keywords['audio'] = set()
+                print(f"警告: 音频关键字文件 {audio_path} 不存在")
+            
+            # 加载display关键字
+            display_path = get_resource_path('keyword/display.txt')
+            if os.path.exists(display_path):
+                with open(display_path, 'r', encoding='utf-8') as f:
+                    keywords['display'] = {line.strip() for line in f if line.strip()}
+            else:
+                keywords['display'] = set()
+                print(f"警告: 显示关键字文件 {display_path} 不存在")
+                
+        except Exception as e:
+            print(f"加载关键字文件时出错: {e}")
+            keywords = {'audio': set(), 'display': set()}
         
         return keywords
     
