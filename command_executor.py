@@ -32,10 +32,10 @@ class CommandExecutor:
             
             if gui_mode:
                 # GUI模式：使用start命令在新窗口中执行
-                print("注意: 如果脚本包含pause命令，请在控制台窗口中按任意键继续")
+                print("注意: 控制台窗口将在执行完成后保持打开状态，需要手动关闭")
                 
-                # 直接使用os.system执行命令，这样可以保留原始的控制台交互
-                cmd = f'start cmd.exe /c "{bat_path} & pause"'
+                # 直接使用os.system执行命令，使用/k参数让窗口保持打开
+                cmd = f'start cmd.exe /k "{bat_path}"'
                 os.system(cmd)
                 
                 # 由于我们使用了start命令，这里不需要等待进程结束

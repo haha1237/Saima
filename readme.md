@@ -1,0 +1,3 @@
+使用exe的方式：
+将dist下的main_gui文件夹下载下来，然后复制到本地文件夹。
+点击main_gui.exe即可执行
