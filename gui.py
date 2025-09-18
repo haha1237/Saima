@@ -1661,22 +1661,68 @@ class BatchCommandGUI(tk.Tk):
         audio_enabled = direction in ["Audio", "Both"]
         display_enabled = direction in ["Display", "Both"]
         
-        # 构建adb命令
-        if log_type == "dmesg":
-            cmd = ["adb", "shell", "dmesg", "-w"]
-        elif log_type == "logcat":
-            cmd = ["adb", "logcat"]
-        else:
-            messagebox.showerror("错误", "不支持的日志类型")
-            return
-        
         try:
-            # 启动adb进程
-            # 在Windows下添加creationflags参数以隐藏终端窗口
+            # 设置创建标志
             creation_flags = 0
             if sys.platform == "win32":
                 creation_flags = subprocess.CREATE_NO_WINDOW
             
+            # 检查设备连接状态
+            self._append_to_output("检查设备连接状态...\n")
+            devices_process = subprocess.Popen(
+                ["adb", "devices"],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                universal_newlines=True,
+                creationflags=creation_flags
+            )
+            devices_stdout, devices_stderr = devices_process.communicate(timeout=10)
+            
+            # 解析设备列表
+            connected_devices = []
+            for line in devices_stdout.split('\n'):
+                if '\tdevice' in line:
+                    device_id = line.split('\t')[0]
+                    connected_devices.append(device_id)
+            
+            if not connected_devices:
+                messagebox.showerror("错误", "未检测到已连接的设备，请确保设备已连接并启用USB调试")
+                return
+            
+            self._append_to_output(f"检测到设备: {', '.join(connected_devices)}\n")
+            
+            # 先执行adb root命令
+            self._append_to_output("执行adb root...\n")
+            root_process = subprocess.Popen(
+                ["adb", "root"],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                universal_newlines=True,
+                creationflags=creation_flags
+            )
+            root_stdout, root_stderr = root_process.communicate(timeout=10)
+            
+            # 检查adb root是否成功
+            if root_process.returncode != 0:
+                self._append_to_output(f"警告: adb root执行失败: {root_stderr}\n")
+            else:
+                self._append_to_output(f"adb root执行成功\n")
+            
+            # 等待一下让root权限生效
+            time.sleep(1)
+            
+            # 构建adb命令
+            if log_type == "dmesg":
+                cmd = ["adb", "shell", "dmesg", "-w"]
+            elif log_type == "logcat":
+                # 进入adb shell内执行logcat，结束后使用exit退出
+                cmd = ["adb", "shell", "logcat"]
+            else:
+                messagebox.showerror("错误", "不支持的日志类型")
+                return
+            
+            # 启动adb进程
+            # 在Windows下添加creationflags参数以隐藏终端窗口
             self.realtime_process = subprocess.Popen(
                 cmd, 
                 stdout=subprocess.PIPE, 
@@ -1742,6 +1788,8 @@ class BatchCommandGUI(tk.Tk):
     
     def _realtime_log_reader(self, audio_enabled, display_enabled):
         """实时日志读取线程（优化版本）"""
+        import os
+        
         try:
             # 获取关键字
             audio_keywords = set()
@@ -1766,16 +1814,96 @@ class BatchCommandGUI(tk.Tk):
             last_update_time = time.time()
             update_interval = self.performance_config['update_interval']
             
-            while not self.realtime_stop_event.is_set() and self.realtime_process and self.realtime_process.poll() is None:
+            # 设置非阻塞读取（仅在非Windows系统）
+            if sys.platform != "win32" and self.realtime_process:
+                import fcntl
+                fd = self.realtime_process.stdout.fileno()
+                fl = fcntl.fcntl(fd, fcntl.F_GETFL)
+                fcntl.fcntl(fd, fcntl.F_SETFL, fl | os.O_NONBLOCK)
+            
+            consecutive_empty_reads = 0
+            max_empty_reads = 100  # 连续空读取次数限制
+            
+            while not self.realtime_stop_event.is_set():
                 try:
-                    # 读取一行日志
-                    line = self.realtime_process.stdout.readline()
-                    if not line:
+                    # 检查进程状态
+                    if not self.realtime_process or self.realtime_process.poll() is not None:
+                        # 进程已退出，获取退出信息
+                        if self.realtime_process:
+                            return_code = self.realtime_process.returncode
+                            stderr_output = ""
+                            try:
+                                stderr_output = self.realtime_process.stderr.read() or ""
+                            except:
+                                pass
+                            
+                            error_msg = f"logcat进程意外退出，返回码: {return_code}"
+                            if stderr_output:
+                                error_msg += f"，错误信息: {stderr_output}"
+                            
+                            self.after(0, self._append_to_output, f"\n{error_msg}\n")
+                            
+                            # 检查是否是设备连接问题
+                            if "device not found" in stderr_output.lower() or "no devices" in stderr_output.lower():
+                                self.after(0, self._append_to_output, "\n检测到设备连接问题，尝试重新连接...\n")
+                                # 可以在这里添加重连逻辑
                         break
                     
-                    # 检查是否包含关键字（优化版本）
-                    if self._line_contains_keywords_optimized(line, all_keywords, compiled_patterns):
-                        buffer_lines.append((line, all_keywords))
+                    # 非阻塞读取（Windows使用不同的方法）
+                    line = None
+                    if sys.platform == "win32":
+                        # Windows下使用线程池和超时机制
+                        try:
+                            import threading
+                            import queue
+                            
+                            def read_line():
+                                try:
+                                    return self.realtime_process.stdout.readline()
+                                except:
+                                    return None
+                            
+                            # 使用线程读取，设置超时
+                            result_queue = queue.Queue()
+                            read_thread = threading.Thread(target=lambda: result_queue.put(read_line()))
+                            read_thread.daemon = True
+                            read_thread.start()
+                            
+                            try:
+                                line = result_queue.get(timeout=0.1)
+                            except queue.Empty:
+                                line = None
+                        except:
+                            line = None
+                    else:
+                        # Unix/Linux系统使用select
+                        try:
+                            import select
+                            ready, _, _ = select.select([self.realtime_process.stdout], [], [], 0.1)
+                            if ready:
+                                try:
+                                    line = self.realtime_process.stdout.readline()
+                                except IOError:
+                                    line = None
+                        except:
+                            line = None
+                    
+                    if line:
+                        consecutive_empty_reads = 0
+                        line = line.strip()
+                        if line:  # 只处理非空行
+                            # 检查是否包含关键字（优化版本）
+                            if self._line_contains_keywords_optimized(line, all_keywords, compiled_patterns):
+                                buffer_lines.append((line, all_keywords))
+                    else:
+                        consecutive_empty_reads += 1
+                        # 如果连续空读取太多次，可能进程有问题
+                        if consecutive_empty_reads > max_empty_reads:
+                            self.after(0, self._append_to_output, "\n警告: logcat进程可能无响应，尝试重启...\n")
+                            break
+                        
+                        # 短暂休眠避免CPU占用过高
+                        time.sleep(0.01)
                     
                     # 批量更新UI条件：缓冲区满了或者时间间隔到了
                     current_time = time.time()
@@ -1788,7 +1916,7 @@ class BatchCommandGUI(tk.Tk):
                         last_update_time = current_time
                 
                 except Exception as e:
-                    print(f"读取日志行时出错: {e}")
+                    self.after(0, self._append_to_output, f"\n读取日志行时出错: {e}\n")
                     break
             
             # 处理剩余的缓冲区内容
@@ -1796,12 +1924,18 @@ class BatchCommandGUI(tk.Tk):
                 self.after(0, self._batch_append_to_output_with_highlight, buffer_lines)
         
         except Exception as e:
-            print(f"实时日志读取线程出错: {e}")
+            self.after(0, self._append_to_output, f"\n实时日志读取线程出错: {e}\n")
         finally:
             # 确保进程被清理
             if self.realtime_process:
                 try:
                     self.realtime_process.terminate()
+                    self.realtime_process.wait(timeout=3)
+                except subprocess.TimeoutExpired:
+                    try:
+                        self.realtime_process.kill()
+                    except:
+                        pass
                 except:
                     pass
     
@@ -1840,12 +1974,45 @@ class BatchCommandGUI(tk.Tk):
         
         return highlighted_line
     
+    def _check_device_connection(self):
+        """检查设备连接状态"""
+        try:
+            creation_flags = 0
+            if sys.platform == "win32":
+                creation_flags = subprocess.CREATE_NO_WINDOW
+            
+            devices_process = subprocess.Popen(
+                ["adb", "devices"],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                universal_newlines=True,
+                creationflags=creation_flags
+            )
+            devices_stdout, devices_stderr = devices_process.communicate(timeout=5)
+            
+            # 解析设备列表
+            connected_devices = []
+            for line in devices_stdout.split('\n'):
+                if '\tdevice' in line:
+                    device_id = line.split('\t')[0]
+                    connected_devices.append(device_id)
+            
+            return len(connected_devices) > 0, connected_devices
+        except Exception as e:
+            return False, []
+    
     def _append_to_output(self, text):
         """线程安全地向输出框添加文本"""
         try:
             self.cmd_output_text.configure(state="normal")
+            # 确保文本以换行符结尾
+            if not text.endswith('\n'):
+                text += '\n'
             self.cmd_output_text.insert(tk.END, text)
+            # 强制滚动到底部
             self.cmd_output_text.see(tk.END)
+            # 确保滚动条更新
+            self.cmd_output_text.update_idletasks()
             self.cmd_output_text.configure(state="disabled")
         except Exception as e:
             print(f"添加输出文本时出错: {e}")
@@ -1854,6 +2021,10 @@ class BatchCommandGUI(tk.Tk):
         """线程安全地向输出框添加带高亮的文本"""
         try:
             self.cmd_output_text.configure(state="normal")
+            
+            # 确保行以换行符结尾
+            if not line.endswith('\n'):
+                line += '\n'
             
             # 获取当前插入位置
             start_pos = self.cmd_output_text.index(tk.END + "-1c")
@@ -1882,7 +2053,10 @@ class BatchCommandGUI(tk.Tk):
                     
                     color_index += 1
             
+            # 强制滚动到底部
             self.cmd_output_text.see(tk.END)
+            # 确保滚动条更新
+            self.cmd_output_text.update_idletasks()
             self.cmd_output_text.configure(state="disabled")
         except Exception as e:
             print(f"添加高亮输出文本时出错: {e}")
@@ -1923,6 +2097,10 @@ class BatchCommandGUI(tk.Tk):
             
             # 批量处理所有行
             for line, keywords in buffer_lines:
+                # 确保行以换行符结尾
+                if not line.endswith('\n'):
+                    line += '\n'
+                
                 # 获取当前插入位置
                 start_pos = self.cmd_output_text.index(tk.END + "-1c")
                 
@@ -1949,6 +2127,8 @@ class BatchCommandGUI(tk.Tk):
             
             # 只在最后滚动到底部和设置状态，减少UI操作
             self.cmd_output_text.see(tk.END)
+            # 确保滚动条更新
+            self.cmd_output_text.update_idletasks()
             self.cmd_output_text.configure(state="disabled")
             
         except Exception as e:
