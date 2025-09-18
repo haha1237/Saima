@@ -1,0 +1,1 @@
+echo display_config

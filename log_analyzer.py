@@ -5,6 +5,7 @@ from typing import List, Dict, Set, Optional
 import colorama
 from colorama import Fore, Style
 from ai_analyzer import AIAnalyzer
+from resource_manager import resource_manager
 
 # 初始化colorama
 colorama.init(autoreset=True)
@@ -51,24 +52,12 @@ class LogAnalyzer:
         Returns:
             关键字字典，键为类型（audio/display），值为关键字集合
         """
-        import sys
-        
-        # 获取正确的资源路径（支持打包后的路径）
-        def get_resource_path(relative_path):
-            try:
-                # PyInstaller打包后的临时目录
-                base_path = sys._MEIPASS
-            except AttributeError:
-                # 开发环境下的当前目录
-                base_path = os.path.abspath(".")
-            return os.path.join(base_path, relative_path)
-        
         keywords = {}
         
-        # 使用资源路径获取关键字文件
+        # 使用资源管理器获取关键字文件路径
         try:
             # 加载audio关键字
-            audio_path = get_resource_path('keyword/audio.txt')
+            audio_path = resource_manager.get_read_path('keyword/audio.txt')
             if os.path.exists(audio_path):
                 with open(audio_path, 'r', encoding='utf-8') as f:
                     keywords['audio'] = {line.strip() for line in f if line.strip()}
@@ -77,7 +66,7 @@ class LogAnalyzer:
                 print(f"警告: 音频关键字文件 {audio_path} 不存在")
             
             # 加载display关键字
-            display_path = get_resource_path('keyword/display.txt')
+            display_path = resource_manager.get_read_path('keyword/display.txt')
             if os.path.exists(display_path):
                 with open(display_path, 'r', encoding='utf-8') as f:
                     keywords['display'] = {line.strip() for line in f if line.strip()}
@@ -211,7 +200,6 @@ class LogAnalyzer:
             
             # 如果没有关键字，则跳过处理
             if not keywords:
-                print(f"跳过 {file_path}: 没有{keyword_type}关键字")
                 return {'count': 0, 'content': []}
             
             matched_lines = []
@@ -224,9 +212,6 @@ class LogAnalyzer:
                     # 检查行是否包含任何关键字（作为完整单词）
                     if self._line_contains_keywords(line, keywords):
                         matched_lines.append(line)
-                        # 在控制台显示带颜色的行
-                        colored_line = self._colorize_log_line(line)
-                        print(colored_line, end='')
             
             # 如果有匹配的行，保存到processed_log目录
             if matched_lines:
@@ -236,11 +221,8 @@ class LogAnalyzer:
                 with open(processed_path, 'w', encoding='utf-8') as f:
                     f.writelines(matched_lines)
                 
-                # 不再显示详细的处理路径信息
-                print(f"匹配到 {len(matched_lines)}/{total_lines} 行")
                 return {'count': len(matched_lines), 'content': matched_lines}
             else:
-                print(f"跳过 {file_path}: 没有匹配的行")
                 return {'count': 0, 'content': []}
                 
         except Exception as e:

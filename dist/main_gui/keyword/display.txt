@@ -1,0 +1,12 @@
+display
+screen
+monitor
+resolution
+brightness
+contrast
+color
+pixel
+refresh
+hdmi
+vga
+dpi

@@ -14,6 +14,7 @@ import re
 from command_manager import CommandManager
 from command_executor import CommandExecutor
 from log_analyzer import LogAnalyzer
+from resource_manager import resource_manager
 
 # Markdown支持
 try:
@@ -59,19 +60,14 @@ class BatchCommandGUI(tk.Tk):
     def __init__(self):
         super().__init__()
         
-        # 获取项目根目录
-        self.root_dir = os.path.dirname(os.path.abspath(__file__))
-        
-        # 获取批处理脚本的基础路径（使用项目根目录下的batch_script）
-        self.base_path = os.path.join(self.root_dir, 'batch_script')
+        # 使用资源管理器获取路径
+        self.base_path = resource_manager.get_batch_script_dir()
+        keyword_dir = resource_manager.get_keyword_dir()
+        processed_dir = resource_manager.get_processed_log_dir()
         
         # 初始化各个模块
         self.command_manager = CommandManager(self.base_path)
         self.command_executor = CommandExecutor()
-        
-        # 使用项目根目录下的keyword目录
-        keyword_dir = os.path.join(self.root_dir, 'keyword')
-        processed_dir = os.path.join(self.root_dir, 'processed_log')
         
         # AI API密钥（可以从配置文件或环境变量读取）
         self.ai_api_key = "sk_bb948d4a08697edc789ccdf83743992b3ba455f9f56cf945f502975"
@@ -202,9 +198,25 @@ class BatchCommandGUI(tk.Tk):
         cmd_output_frame = ttk.LabelFrame(output_frame, text="执行结果")
         cmd_output_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
         
-        self.cmd_output_text = scrolledtext.ScrolledText(cmd_output_frame, height=15, wrap=tk.WORD)
-        self.cmd_output_text.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
-        self.cmd_output_text.configure(state="disabled")
+        # 创建文本框容器以支持横向滚动条
+        cmd_text_frame = ttk.Frame(cmd_output_frame)
+        cmd_text_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+        
+        self.cmd_output_text = tk.Text(cmd_text_frame, height=15, wrap=tk.NONE, state="disabled")
+        
+        # 添加垂直和横向滚动条
+        cmd_v_scrollbar = ttk.Scrollbar(cmd_text_frame, orient=tk.VERTICAL, command=self.cmd_output_text.yview)
+        cmd_h_scrollbar = ttk.Scrollbar(cmd_text_frame, orient=tk.HORIZONTAL, command=self.cmd_output_text.xview)
+        
+        self.cmd_output_text.configure(yscrollcommand=cmd_v_scrollbar.set, xscrollcommand=cmd_h_scrollbar.set)
+        
+        # 布局滚动条和文本框
+        self.cmd_output_text.grid(row=0, column=0, sticky="nsew")
+        cmd_v_scrollbar.grid(row=0, column=1, sticky="ns")
+        cmd_h_scrollbar.grid(row=1, column=0, sticky="ew")
+        
+        cmd_text_frame.grid_rowconfigure(0, weight=1)
+        cmd_text_frame.grid_columnconfigure(0, weight=1)
         
         # 配置实时日志的高亮标签样式（与日志分析页面一致）
         self.cmd_output_text.tag_configure("highlight_red", background="#ffcccc", foreground="#cc0000")
@@ -595,9 +607,9 @@ class BatchCommandGUI(tk.Tk):
         highlight_colors = ["highlight_red", "highlight_blue", "highlight_green", "highlight_yellow", "highlight_purple"]
         
         for line in content_lines:
-            line_start = self.log_filter_text.index(tk.INSERT)
+            # 获取插入前的文本末尾位置
+            line_start = self.log_filter_text.index(tk.END + "-1c")
             self.log_filter_text.insert(tk.END, f"{line}\n")
-            line_end = self.log_filter_text.index(tk.INSERT)
             
             # 为每个关键词应用不同颜色的高亮
             for i, keyword in enumerate(keywords):
@@ -609,35 +621,25 @@ class BatchCommandGUI(tk.Tk):
         log_type = self.log_type_var.get()
         keywords = []
         
-        # 获取正确的资源路径（支持打包后的路径）
-        def get_resource_path(relative_path):
-            try:
-                # PyInstaller打包后的临时目录
-                base_path = sys._MEIPASS
-            except AttributeError:
-                # 开发环境下的当前目录
-                base_path = os.path.abspath(".")
-            return os.path.join(base_path, relative_path)
-        
         try:
             if log_type == "audio":
-                audio_path = get_resource_path("keyword/audio.txt")
+                audio_path = resource_manager.get_read_path("keyword/audio.txt")
                 with open(audio_path, "r", encoding="utf-8") as f:
                     keywords = [line.strip() for line in f if line.strip()]
             elif log_type == "display":
-                display_path = get_resource_path("keyword/display.txt")
+                display_path = resource_manager.get_read_path("keyword/display.txt")
                 with open(display_path, "r", encoding="utf-8") as f:
                     keywords = [line.strip() for line in f if line.strip()]
             elif log_type == "all":
                 # 合并所有关键词
                 try:
-                    audio_path = get_resource_path("keyword/audio.txt")
+                    audio_path = resource_manager.get_read_path("keyword/audio.txt")
                     with open(audio_path, "r", encoding="utf-8") as f:
                         keywords.extend([line.strip() for line in f if line.strip()])
                 except:
                     pass
                 try:
-                    display_path = get_resource_path("keyword/display.txt")
+                    display_path = resource_manager.get_read_path("keyword/display.txt")
                     with open(display_path, "r", encoding="utf-8") as f:
                         keywords.extend([line.strip() for line in f if line.strip()])
                 except:
@@ -704,33 +706,27 @@ class BatchCommandGUI(tk.Tk):
         self.log_output_text.delete(1.0, tk.END)
         
         # 显示分析开始信息
-        self.log_output_text.insert(tk.END, f"开始分析{log_type}日志文件: {log_path}\n")
+        self.log_output_text.insert(tk.END, f"正在分析{log_type}日志文件，请稍候...\n")
         self.log_output_text.configure(state="disabled")
         
-        # 重定向标准输出到分析结果文本框
-        redirect = RedirectText(self.log_output_text)
-        old_stdout = sys.stdout
-        sys.stdout = redirect
-        
-        # 在新线程中分析日志
+        # 在新线程中分析日志（不重定向输出）
         def run_analysis():
             try:
                 result = self.log_analyzer.analyze_log(log_path, log_type)
                 
-                # 恢复标准输出
-                sys.stdout = old_stdout
-                redirect.stop_updating()
-                
                 # 更新UI
                 self.after(100, lambda: self.update_log_output(result))
             except Exception as e:
-                sys.stdout = old_stdout
-                redirect.stop_updating()
                 self.after(100, lambda: self.update_log_output({'files': 0, 'matched_lines': 0, 'error': str(e)}))
         
         threading.Thread(target=run_analysis, daemon=True).start()
     
     def update_log_output(self, result):
+        # 清除分析进度信息
+        self.log_output_text.configure(state="normal")
+        self.log_output_text.delete(1.0, tk.END)
+        self.log_output_text.configure(state="disabled")
+        
         # 切换到日志筛选显示模式
         self._switch_to_log_filter_mode()
         
@@ -1017,26 +1013,16 @@ class BatchCommandGUI(tk.Tk):
         display_text = scrolledtext.ScrolledText(display_frame)
         display_text.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
         
-        # 获取正确的资源路径（支持打包后的路径）
-        def get_resource_path(relative_path):
-            try:
-                # PyInstaller打包后的临时目录
-                base_path = sys._MEIPASS
-            except AttributeError:
-                # 开发环境下的当前目录
-                base_path = os.path.abspath(".")
-            return os.path.join(base_path, relative_path)
-        
         # 加载关键词
         try:
             # 音频关键词
-            audio_path = get_resource_path('keyword/audio.txt')
+            audio_path = resource_manager.get_read_path('keyword/audio.txt')
             if os.path.exists(audio_path):
                 with open(audio_path, 'r', encoding='utf-8') as f:
                     audio_text.insert(tk.END, f.read())
             
             # 显示关键词
-            display_path = get_resource_path('keyword/display.txt')
+            display_path = resource_manager.get_read_path('keyword/display.txt')
             if os.path.exists(display_path):
                 with open(display_path, 'r', encoding='utf-8') as f:
                     display_text.insert(tk.END, f.read())
@@ -1049,15 +1035,15 @@ class BatchCommandGUI(tk.Tk):
         
         def save_keywords():
             try:
-                # 保存音频关键词
+                # 保存音频关键词到可写路径
                 audio_content = audio_text.get(1.0, tk.END).strip()
-                audio_path = os.path.join(self.log_analyzer.keyword_dir, 'audio.txt')
+                audio_path = resource_manager.get_write_path('keyword/audio.txt')
                 with open(audio_path, 'w', encoding='utf-8') as f:
                     f.write(audio_content)
                 
-                # 保存显示关键词
+                # 保存显示关键词到可写路径
                 display_content = display_text.get(1.0, tk.END).strip()
-                display_path = os.path.join(self.log_analyzer.keyword_dir, 'display.txt')
+                display_path = resource_manager.get_write_path('keyword/display.txt')
                 with open(display_path, 'w', encoding='utf-8') as f:
                     f.write(display_content)
                 

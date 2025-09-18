@@ -1,0 +1,1 @@
+dumpsys media.audio_policy
