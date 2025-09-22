@@ -38,6 +38,7 @@ coll = COLLECT(
     Tree('batch_script', prefix='batch_script'),
     Tree('keyword', prefix='keyword'),
     Tree('processed_log', prefix='processed_log'),
+    Tree('realtime_logs', prefix='realtime_logs'),
     strip=False,
     upx=True,
     upx_exclude=[],

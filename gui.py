@@ -10,6 +10,7 @@ import queue
 import time
 import subprocess
 import re
+from datetime import datetime
 
 from command_manager import CommandManager
 from command_executor import CommandExecutor
@@ -249,6 +250,12 @@ class BatchCommandGUI(tk.Tk):
                                       values=["Audio", "Display", "Both"], state="readonly", width=8)
         direction_combo.pack(side=tk.LEFT, padx=(0, 10))
         
+        # 保存日志复选框
+        self.save_log_var = tk.BooleanVar()
+        self.save_log_checkbox = ttk.Checkbutton(realtime_controls_frame, text="保存", 
+                                               variable=self.save_log_var)
+        self.save_log_checkbox.pack(side=tk.LEFT, padx=(0, 5))
+        
         # 操作按钮
         self.start_realtime_button = ttk.Button(realtime_controls_frame, text="开始实时日志抓取筛选", 
                                                command=self.start_realtime_log_capture)
@@ -271,6 +278,7 @@ class BatchCommandGUI(tk.Tk):
         self.realtime_process = None
         self.realtime_stop_event = None
         self.realtime_thread = None
+        self.log_file_handle = None  # 用于保存日志文件句柄
     
     def create_log_tab(self):
         # 创建左侧选择区域和右侧输出区域的分隔窗格
@@ -779,7 +787,7 @@ class BatchCommandGUI(tk.Tk):
                 self.log_output_text.configure(state="disabled")
     
     def ai_analyze_log(self):
-        """使用AI分析日志"""
+        """使用AI分析日志，支持超长日志的智能分段处理"""
         log_file = self.log_file_var.get().strip()
         if not log_file:
             messagebox.showwarning("警告", "请先选择日志文件")
@@ -802,26 +810,58 @@ class BatchCommandGUI(tk.Tk):
         # 在新线程中执行AI分析
         def ai_analysis_thread():
             try:
+                # 显示开始分析的提示
+                self.after(0, lambda: self._update_ai_progress("正在读取日志文件..."))
+                
                 # 读取日志文件内容
                 with open(log_file, 'r', encoding='utf-8', errors='ignore') as f:
                     log_content = f.read()
                 
-                # 如果日志内容太长，只取前10000个字符
-                if len(log_content) > 10000:
-                    log_content = log_content[:10000] + "\n\n[注意: 日志内容过长，已截取前10000个字符进行分析]"
+                # 显示日志长度信息和处理策略
+                content_length = len(log_content)
+                if content_length > 10000:
+                    progress_msg = f"检测到超长日志（{content_length:,} 字符）\n启用智能分段处理机制...\n正在进行AI分析，请耐心等待..."
+                    self.after(0, lambda: self._update_ai_progress(progress_msg))
+                else:
+                    progress_msg = f"日志长度：{content_length:,} 字符\n正在进行AI分析..."
+                    self.after(0, lambda: self._update_ai_progress(progress_msg))
                 
-                # 调用AI分析
+                # 调用AI分析（现在支持自动分段处理）
                 result = self.log_analyzer.analyze_with_ai(log_content, analysis_type)
                 
                 # 在主线程中更新UI
                 self.after(0, lambda: self.update_ai_analysis_result(result, analysis_type))
                 
+            except FileNotFoundError:
+                error_msg = "错误：日志文件不存在，请重新选择文件"
+                self.after(0, lambda: self.update_ai_analysis_result(error_msg, analysis_type))
+            except PermissionError:
+                error_msg = "错误：没有权限读取日志文件"
+                self.after(0, lambda: self.update_ai_analysis_result(error_msg, analysis_type))
+            except UnicodeDecodeError:
+                error_msg = "错误：日志文件编码格式不支持，请检查文件格式"
+                self.after(0, lambda: self.update_ai_analysis_result(error_msg, analysis_type))
             except Exception as e:
-                error_msg = f"AI分析失败: {str(e)}"
+                error_msg = f"AI分析失败: {str(e)}\n\n请检查：\n1. 网络连接是否正常\n2. API配置是否正确\n3. 日志文件是否完整"
                 self.after(0, lambda: self.update_ai_analysis_result({"error": error_msg}, analysis_type))
         
         # 启动分析线程
         threading.Thread(target=ai_analysis_thread, daemon=True).start()
+    
+    def _update_ai_progress(self, message):
+        """更新AI分析进度显示"""
+        try:
+            # 切换到AI分析模式以显示进度
+            self._switch_to_ai_analysis_mode()
+            
+            # 在AI分析结果区域显示进度信息
+            if hasattr(self, 'ai_result_text'):
+                self.ai_result_text.delete(1.0, tk.END)
+                self.ai_result_text.insert(tk.END, message)
+                self.ai_result_text.see(tk.END)
+                self.ai_result_text.update_idletasks()
+        except Exception as e:
+            print(f"更新进度显示失败: {e}")
     
     def update_ai_analysis_result(self, result, analysis_type):
         """更新AI分析结果"""
@@ -843,21 +883,43 @@ class BatchCommandGUI(tk.Tk):
             analysis_name = type_names.get(analysis_type, analysis_type)
             markdown_content += f"\n## 🤖 AI {analysis_name} 结果\n\n"
             
-            if "error" in result:
+            if isinstance(result, dict) and "error" in result:
                 markdown_content += f"### ❌ 分析出错\n\n**错误信息:** {result['error']}\n\n"
             else:
-                # 显示分析结果
-                if "analysis" in result:
-                    markdown_content += f"### 📊 分析结果\n\n{result['analysis']}\n\n"
-                
-                if "suggestions" in result:
-                    markdown_content += f"### 💡 建议\n\n{result['suggestions']}\n\n"
-                
-                if "summary" in result:
-                    markdown_content += f"### 📝 总结\n\n{result['summary']}\n\n"
+                # 处理新的分析结果格式
+                if isinstance(result, dict):
+                    # 显示分析结果
+                    if "analysis" in result:
+                        markdown_content += f"### 📊 分析结果\n\n{result['analysis']}\n\n"
+                    
+                    if "suggestions" in result:
+                        markdown_content += f"### 💡 建议\n\n{result['suggestions']}\n\n"
+                    
+                    if "summary" in result:
+                        markdown_content += f"### 📝 总结\n\n{result['summary']}\n\n"
+                    
+                    # 处理分段分析结果
+                    if "segment_count" in result:
+                        markdown_content += f"### 📋 分析统计\n\n"
+                        markdown_content += f"- **分段数量:** {result['segment_count']}\n"
+                        if "total_length" in result:
+                            markdown_content += f"- **总长度:** {result['total_length']} 字符\n"
+                        markdown_content += "\n"
+                    
+                    # 显示详细分析内容
+                    if "detailed_analysis" in result:
+                        markdown_content += f"### 🔍 详细分析\n\n{result['detailed_analysis']}\n\n"
+                    
+                    # 显示关键发现
+                    if "key_findings" in result:
+                        markdown_content += f"### 🔑 关键发现\n\n{result['key_findings']}\n\n"
+                    
+                    # 显示处理信息
+                    if "processing_info" in result:
+                        markdown_content += f"### ℹ️ 处理信息\n\n{result['processing_info']}\n\n"
                 
                 # 如果结果是字符串格式，直接显示
-                if isinstance(result, str):
+                elif isinstance(result, str):
                     markdown_content += f"### 📋 分析内容\n\n```\n{result}\n```\n\n"
             
             # 获取当前内容并追加新内容
@@ -891,21 +953,43 @@ class BatchCommandGUI(tk.Tk):
             
             self.log_output_text.insert(tk.END, f"=== AI {type_names.get(analysis_type, analysis_type)} 结果 ===\n\n")
             
-            if "error" in result:
+            if isinstance(result, dict) and "error" in result:
                 self.log_output_text.insert(tk.END, f"错误: {result['error']}\n")
             else:
-                # 显示分析结果
-                if "analysis" in result:
-                    self.log_output_text.insert(tk.END, f"分析结果:\n{result['analysis']}\n\n")
-                
-                if "suggestions" in result:
-                    self.log_output_text.insert(tk.END, f"建议:\n{result['suggestions']}\n\n")
-                
-                if "summary" in result:
-                    self.log_output_text.insert(tk.END, f"总结:\n{result['summary']}\n\n")
+                # 处理新的分析结果格式
+                if isinstance(result, dict):
+                    # 显示分析结果
+                    if "analysis" in result:
+                        self.log_output_text.insert(tk.END, f"分析结果:\n{result['analysis']}\n\n")
+                    
+                    if "suggestions" in result:
+                        self.log_output_text.insert(tk.END, f"建议:\n{result['suggestions']}\n\n")
+                    
+                    if "summary" in result:
+                        self.log_output_text.insert(tk.END, f"总结:\n{result['summary']}\n\n")
+                    
+                    # 处理分段分析结果
+                    if "segment_count" in result:
+                        self.log_output_text.insert(tk.END, f"分析统计:\n")
+                        self.log_output_text.insert(tk.END, f"- 分段数量: {result['segment_count']}\n")
+                        if "total_length" in result:
+                            self.log_output_text.insert(tk.END, f"- 总长度: {result['total_length']} 字符\n")
+                        self.log_output_text.insert(tk.END, "\n")
+                    
+                    # 显示详细分析内容
+                    if "detailed_analysis" in result:
+                        self.log_output_text.insert(tk.END, f"详细分析:\n{result['detailed_analysis']}\n\n")
+                    
+                    # 显示关键发现
+                    if "key_findings" in result:
+                        self.log_output_text.insert(tk.END, f"关键发现:\n{result['key_findings']}\n\n")
+                    
+                    # 显示处理信息
+                    if "processing_info" in result:
+                        self.log_output_text.insert(tk.END, f"处理信息:\n{result['processing_info']}\n\n")
                 
                 # 如果结果是字符串格式，直接显示
-                if isinstance(result, str):
+                elif isinstance(result, str):
                     self.log_output_text.insert(tk.END, result)
             
             self.log_output_text.configure(state="disabled")
@@ -1743,12 +1827,26 @@ class BatchCommandGUI(tk.Tk):
             )
             self.realtime_thread.start()
             
+            # 如果勾选了保存日志，创建日志文件
+            if self.save_log_var.get():
+                self.log_file_handle, self.log_file_path = self._create_log_file()
+                if self.log_file_handle:
+                    self._append_to_output(f"日志将保存到: {self.log_file_path}\n")
+                else:
+                    self._append_to_output("警告: 日志文件创建失败，将不会保存日志\n")
+                    self.log_file_path = None
+            
             # 更新按钮状态
             self.start_realtime_button.config(state="disabled")
             self.stop_realtime_button.config(state="normal")
             
             # 在输出框中显示开始信息
-            self._append_to_output(f"开始实时抓取{log_type}日志，筛选方向: {direction}\n" + "="*50 + "\n")
+            start_msg = f"开始实时抓取{log_type}日志，筛选方向: {direction}\n" + "="*50 + "\n"
+            self._append_to_output(start_msg)
+            
+            # 如果启用了日志保存，也写入到文件
+            if self.save_log_var.get():
+                self._write_to_log_file(start_msg)
             
         except Exception as e:
             messagebox.showerror("错误", f"启动实时日志抓取失败: {str(e)}")
@@ -1778,7 +1876,15 @@ class BatchCommandGUI(tk.Tk):
         self.stop_realtime_button.config(state="disabled")
         
         # 在输出框中显示停止信息
-        self._append_to_output("\n" + "="*50 + "\n实时日志抓取已停止\n")
+        stop_msg = "\n" + "="*50 + "\n实时日志抓取已停止\n"
+        self._append_to_output(stop_msg)
+        
+        # 如果启用了日志保存，写入停止信息并关闭文件
+        if self.save_log_var.get():
+            self._write_to_log_file(stop_msg)
+        
+        # 关闭日志文件
+        self._close_log_file()
     
     def clear_realtime_output(self):
         """清除实时日志输出"""
@@ -2009,6 +2115,11 @@ class BatchCommandGUI(tk.Tk):
             if not text.endswith('\n'):
                 text += '\n'
             self.cmd_output_text.insert(tk.END, text)
+            
+            # 如果启用了日志保存，写入到文件
+            if self.save_log_var.get():
+                self._write_to_log_file(text)
+            
             # 强制滚动到底部
             self.cmd_output_text.see(tk.END)
             # 确保滚动条更新
@@ -2031,6 +2142,10 @@ class BatchCommandGUI(tk.Tk):
             
             # 插入原始文本
             self.cmd_output_text.insert(tk.END, line)
+            
+            # 如果启用了日志保存，写入到文件
+            if self.save_log_var.get():
+                self._write_to_log_file(line)
             
             # 为关键字添加高亮
             if keywords:
@@ -2106,6 +2221,10 @@ class BatchCommandGUI(tk.Tk):
                 
                 # 插入原始文本
                 self.cmd_output_text.insert(tk.END, line)
+                
+                # 如果启用了日志保存，写入到文件
+                if self.save_log_var.get():
+                    self._write_to_log_file(line)
                 
                 # 为关键字添加高亮（仅在启用时）
                 if enable_highlight and keywords:
@@ -2258,6 +2377,129 @@ class BatchCommandGUI(tk.Tk):
         y = (dialog.winfo_screenheight() // 2) - (dialog.winfo_height() // 2)
         dialog.geometry(f"+{x}+{y}")
 
+    def _create_log_file(self):
+        """创建日志文件，返回文件句柄"""
+        try:
+            # 创建日志保存目录
+            if getattr(sys, 'frozen', False):
+                # 如果是打包后的exe程序，使用exe文件所在目录（与keyword目录同级）
+                base_dir = os.path.dirname(sys.executable)
+                print(f"exe程序根目录：{base_dir}")
+            else:
+                # 如果是源码运行，使用脚本所在目录
+                base_dir = os.path.dirname(os.path.abspath(__file__))
+                print(f"源码运行目录：{base_dir}")
+            
+            log_dir = os.path.join(base_dir, "realtime_logs")
+            
+            # 确保日志目录存在
+            if not os.path.exists(log_dir):
+                os.makedirs(log_dir, exist_ok=True)
+                print(f"创建日志目录：{log_dir}")
+            else:
+                print(f"使用现有日志目录：{log_dir}")
+            
+            # 创建时间戳
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            
+            # 创建日志文件名
+            log_type = self.realtime_log_type_var.get()
+            direction = self.realtime_direction_var.get()
+            log_filename = f"realtime_{log_type}_{direction}_{timestamp}.txt"
+            log_filepath = os.path.join(log_dir, log_filename)
+            
+            # 创建并打开文件
+            log_file = open(log_filepath, 'w', encoding='utf-8', buffering=1)  # 行缓冲
+            
+            # 写入文件头信息
+            header_info = [
+                f"实时日志抓取 - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+                f"日志类型: {log_type}",
+                f"筛选方向: {direction}",
+                f"保存路径: {log_filepath}",
+                "=" * 60,
+                ""
+            ]
+            
+            for line in header_info:
+                log_file.write(line + "\n")
+            log_file.flush()
+            
+            print(f"日志文件已创建：{log_filepath}")
+            return log_file, log_filepath
+            
+        except PermissionError:
+            error_msg = "权限不足，无法创建日志文件。请检查目录权限。"
+            messagebox.showerror("权限错误", error_msg)
+            print(f"权限错误：{error_msg}")
+            return None, None
+        except OSError as e:
+            error_msg = f"文件系统错误：{e}"
+            messagebox.showerror("文件系统错误", error_msg)
+            print(f"文件系统错误：{error_msg}")
+            return None, None
+        except Exception as e:
+            error_msg = f"创建日志文件失败：{e}"
+            messagebox.showerror("错误", error_msg)
+            print(f"创建日志文件失败：{error_msg}")
+            return None, None
+    
+    def _close_log_file(self):
+        """关闭日志文件"""
+        if self.log_file_handle:
+            try:
+                # 写入结束信息
+                end_info = [
+                    "",
+                    "=" * 60,
+                    f"日志结束 - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+                    f"文件路径: {getattr(self, 'log_file_path', '未知')}"
+                ]
+                
+                for line in end_info:
+                    self.log_file_handle.write(line + "\n")
+                
+                self.log_file_handle.flush()
+                self.log_file_handle.close()
+                
+                print(f"日志文件已关闭：{getattr(self, 'log_file_path', '未知')}")
+                
+            except Exception as e:
+                print(f"关闭日志文件时出错：{e}")
+            finally:
+                self.log_file_handle = None
+                self.log_file_path = None
+    
+    def _write_to_log_file(self, text):
+        """写入文本到日志文件"""
+        if not self.log_file_handle or not self.save_log_var.get():
+            return
+            
+        try:
+            # 移除ANSI颜色代码和控制字符
+            clean_text = re.sub(r'\x1b\[[0-9;]*[mK]', '', text)
+            clean_text = re.sub(r'\r', '', clean_text)  # 移除回车符
+            
+            # 确保文件句柄仍然有效
+            if self.log_file_handle.closed:
+                print("警告：日志文件句柄已关闭，无法写入")
+                return
+                
+            self.log_file_handle.write(clean_text)
+            self.log_file_handle.flush()
+            
+        except (OSError, IOError) as e:
+            print(f"写入日志文件时发生I/O错误：{e}")
+            # 尝试关闭文件句柄
+            try:
+                if self.log_file_handle and not self.log_file_handle.closed:
+                    self.log_file_handle.close()
+            except:
+                pass
+            self.log_file_handle = None
+            
+        except Exception as e:
+            print(f"写入日志文件时出错：{e}")
 
     
     def on_closing(self):
@@ -2265,6 +2507,11 @@ class BatchCommandGUI(tk.Tk):
             # 停止实时日志抓取
             if hasattr(self, 'realtime_process') and self.realtime_process:
                 self.stop_realtime_log_capture()
+            
+            # 确保日志文件被关闭
+            if hasattr(self, 'log_file_handle') and self.log_file_handle:
+                self._close_log_file()
+                
             self.destroy()
 
 def main():
